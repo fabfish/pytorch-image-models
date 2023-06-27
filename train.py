@@ -14,6 +14,13 @@ NVIDIA CUDA specific speedups adopted from NVIDIA Apex examples
 
 Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
 """
+
+"""
+ADDITIONAL NOTES BY fish:
+    - This script is a modified version of the original train.py script from Ross Wightman's timm library.
+    - for the current version, the 
+"""
+
 import argparse
 import logging
 import os
