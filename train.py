@@ -72,6 +72,10 @@ try:
 except ImportError as e:
     has_functorch = False
 
+# fish: secondorder
+from eva import KFAC as Eva
+from eva import KFACParamScheduler
+
 has_compile = hasattr(torch, 'compile')
 
 
@@ -181,6 +185,45 @@ group.add_argument('--clip-mode', type=str, default='norm',
 group.add_argument('--layer-decay', type=float, default=None,
                    help='layer-wise learning rate decay (default: None)')
 group.add_argument('--opt-kwargs', nargs='*', default={}, action=utils.ParseKwargs)
+
+# fish: EVA preconditioner parameters
+group = parser.add_argument_group('Preconditioner parameters')
+
+# eva second conditioner arguments
+parser.add_argument('--use-eva', action='store_true',default=False,help='use Eva preconditioner')
+
+# KFAC Parameters
+# parser.add_argument('--kfac-name', type=str, default='inverse',
+#         help='choises: %s' % kfac.kfac_mappers.keys() + ', default: '+'inverse')
+parser.add_argument('--exclude-parts', type=str, default='',
+        help='choises: CommunicateInverse,ComputeInverse,CommunicateFactor,ComputeFactor')
+parser.add_argument('--kfac-update-freq', type=int, default=1,
+                    help='iters between kfac inv ops (0 = no kfac) (default: 1)')
+parser.add_argument('--kfac-cov-update-freq', type=int, default=1,
+                    help='iters between kfac cov ops (default: 1)')
+parser.add_argument('--kfac-update-freq-alpha', type=float, default=10,
+                    help='KFAC update freq multiplier (default: 10)')
+parser.add_argument('--kfac-update-freq-decay', nargs='+', type=int, default=None,
+                    help='KFAC update freq schedule (default None)')
+parser.add_argument('--stat-decay', type=float, default=0.95,
+                    help='Alpha value for covariance accumulation (default: 0.95)')
+parser.add_argument('--damping', type=float, default=0.001,
+                    help='KFAC damping factor (default 0.001)')
+parser.add_argument('--damping-alpha', type=float, default=0.5,
+                    help='KFAC damping decay factor (default: 0.5)')
+parser.add_argument('--damping-decay', nargs='+', type=int, default=None,
+                    help='KFAC damping decay schedule (default None)')
+parser.add_argument('--kl-clip', type=float, default=0.001,
+                    help='KL clip (default: 0.001)')
+parser.add_argument('--diag-blocks', type=int, default=1,
+                    help='Number of blocks to approx layer factor with (default: 1)')
+parser.add_argument('--diag-warmup', type=int, default=0,
+                    help='Epoch to start diag block approximation at (default: 0)')
+parser.add_argument('--distribute-layer-factors', action='store_true', default=None,
+                    help='Compute A and G for a single layer on different workers. '
+                            'None to determine automatically based on worker and '
+                            'layer count.')
+
 
 # Learning rate schedule parameters
 group = parser.add_argument_group('Learning rate schedule parameters')
@@ -519,6 +562,33 @@ def main():
         **args.opt_kwargs,
     )
 
+    # fish: add eva preconditioner, not sure if to use model without ddp
+    if args.use_eva:
+        
+        # preconditioner = Eva(model_without_ddp)
+        preconditioner = Eva(
+                model, lr=args.lr, factor_decay=args.stat_decay,
+                damping=args.damping, kl_clip=args.kl_clip,
+                fac_update_freq=args.kfac_cov_update_freq,
+                kfac_update_freq=args.kfac_update_freq,
+                #diag_blocks=args.diag_blocks,
+                #diag_warmup=args.diag_warmup,
+                #distribute_layer_factors=args.distribute_layer_factors, 
+                exclude_parts=args.exclude_parts)
+
+        kfac_param_scheduler = KFACParamScheduler(
+               preconditioner,
+               damping_alpha=args.damping_alpha,
+               damping_schedule=args.damping_decay,
+               update_freq_alpha=args.kfac_update_freq_alpha,
+               update_freq_schedule=args.kfac_update_freq_decay,
+               start_epoch=args.start_epoch)
+
+        print(f"preconditioner eva is adapted")
+
+    else:
+        preconditioner = None
+
     # setup automatic mixed-precision (AMP) loss scaling and op casting
     amp_autocast = suppress  # do nothing
     loss_scaler = None
@@ -790,6 +860,8 @@ def main():
                 loss_scaler=loss_scaler,
                 model_ema=model_ema,
                 mixup_fn=mixup_fn,
+                # fish: add preconditioner
+                preconditioner=preconditioner,
             )
 
             if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
@@ -862,6 +934,8 @@ def train_one_epoch(
         loss_scaler=None,
         model_ema=None,
         mixup_fn=None,
+        # fish: add preconditioner support
+        preconditioner=None,
 ):
     if args.mixup_off_epoch and epoch >= args.mixup_off_epoch:
         if args.prefetcher and loader.mixup_enabled:
@@ -932,6 +1006,10 @@ def train_one_epoch(
                             value=args.clip_grad,
                             mode=args.clip_mode,
                         )
+                    # fish: step the optimizer
+                    if preconditioner is not None:
+                        # self._scaler.step(preconditioner)
+                        preconditioner.step()
                     optimizer.step()
 
         if has_no_sync and not need_update:
