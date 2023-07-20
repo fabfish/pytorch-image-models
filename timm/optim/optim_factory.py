@@ -28,6 +28,9 @@ from .radam import RAdam
 from .rmsprop_tf import RMSpropTF
 from .sgdp import SGDP
 
+# fish: stole sophia from cramming
+from .sophia import Sophia
+
 
 _logger = logging.getLogger(__name__)
 
@@ -403,6 +406,10 @@ def create_optimizer_v2(
         optimizer = bnb.optim.Lion(parameters, **opt_args)
     elif opt_lower == 'bnblion8bit':
         optimizer = bnb.optim.Lion8bit(parameters, **opt_args)
+
+    # fish: add sophia here
+    elif opt_lower == 'sophia':
+        optimizer = Sophia(parameters, **opt_args)
 
     else:
         assert False and "Invalid optimizer"
